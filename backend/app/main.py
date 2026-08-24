@@ -1,0 +1,222 @@
+"""
+FastAPI backend for live vehicle counting from CCTV.
+
+Design for efficiency: detection/tracking runs ONCE in a single
+background thread regardless of how many browser tabs are watching.
+Every /video_feed client and /ws/count client just reads the latest
+already-computed frame/counts from shared state. This means CPU cost
+is constant no matter how many viewers connect.
+"""
+
+import asyncio
+import json
+import os
+import time
+from contextlib import asynccontextmanager
+from threading import Lock
+
+import cv2
+import numpy as np
+from dotenv import load_dotenv
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.websockets import WebSocketState
+
+from app.capture import LatestFrameReader
+from app.detector import BackgroundSubtractionDetector
+from app.tracker import LineCrossingCounter
+
+load_dotenv()
+
+# ---- Config (env-overridable) ----------------------------------------
+RTSP_URL = os.getenv("RTSP_URL", "0")  # "0" = default webcam for local testing
+PROCESS_WIDTH = int(os.getenv("PROCESS_WIDTH", "640"))
+DETECT_EVERY_N_FRAMES = int(os.getenv("DETECT_EVERY_N_FRAMES", "2"))
+OUTPUT_FPS = float(os.getenv("OUTPUT_FPS", "15"))
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
+
+# Counting line as fractions of the processed frame (0..1), so it scales
+# with PROCESS_WIDTH automatically. Default: horizontal line at mid-height.
+LINE_X1 = float(os.getenv("LINE_X1", "0.05"))
+LINE_Y1 = float(os.getenv("LINE_Y1", "0.55"))
+LINE_X2 = float(os.getenv("LINE_X2", "0.95"))
+LINE_Y2 = float(os.getenv("LINE_Y2", "0.55"))
+
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+
+# Webcam index convenience: env RTSP_URL="0" -> int 0 for cv2.VideoCapture
+_capture_source = int(RTSP_URL) if RTSP_URL.strip().isdigit() else RTSP_URL
+
+
+# ---- Shared state -------------------------------------------------------
+class SharedState:
+    def __init__(self):
+        self.lock = Lock()
+        self.jpeg_bytes = None
+        self.count_in = 0
+        self.count_out = 0
+        self.connected = False
+        self.fps = 0.0
+
+
+state = SharedState()
+
+
+class Processor:
+    """Runs in a background thread: capture -> detect (every N frames) ->
+    track -> draw overlay -> encode -> publish to shared state."""
+
+    def __init__(self):
+        self.reader = LatestFrameReader(_capture_source).start()
+        self.detector = BackgroundSubtractionDetector()
+        self.counter = None  # built once we know frame size
+        self._frame_idx = 0
+        self._last_boxes = []
+        self._running = False
+
+    def _build_line(self, w, h):
+        line = ((LINE_X1 * w, LINE_Y1 * h), (LINE_X2 * w, LINE_Y2 * h))
+        self.counter = LineCrossingCounter(line=line)
+
+    def _draw_overlay(self, frame, tracks):
+        h, w = frame.shape[:2]
+        (x1, y1), (x2, y2) = self.counter.line
+        cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 220, 255), 2)
+
+        for t in tracks:
+            x, y, bw, bh = t.box
+            cv2.rectangle(frame, (int(x), int(y)), (int(x + bw), int(y + bh)), (60, 220, 60), 2)
+            cv2.putText(
+                frame, f"#{t.id}", (int(x), int(y) - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 220, 60), 1, cv2.LINE_AA,
+            )
+
+        label = f"IN: {self.counter.count_in}   OUT: {self.counter.count_out}   TOTAL: {self.counter.total}"
+        cv2.rectangle(frame, (0, 0), (w, 30), (0, 0, 0), -1)
+        cv2.putText(frame, label, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        return frame
+
+    def run(self):
+        self._running = True
+        frame_interval = 1.0 / OUTPUT_FPS
+        last_emit = 0.0
+
+        while self._running:
+            frame = self.reader.read()
+            state.connected = self.reader.connected
+
+            if frame is None:
+                time.sleep(0.05)
+                continue
+
+            # Downscale for cheap processing.
+            h, w = frame.shape[:2]
+            scale = PROCESS_WIDTH / float(w)
+            frame = cv2.resize(frame, (PROCESS_WIDTH, int(h * scale)))
+
+            if self.counter is None:
+                self._build_line(*frame.shape[1::-1])
+
+            self._frame_idx += 1
+            if self._frame_idx % DETECT_EVERY_N_FRAMES == 0:
+                self._last_boxes = self.detector.detect(frame)
+
+            tracks = self.counter.update(self._last_boxes)
+            frame = self._draw_overlay(frame, tracks)
+
+            now = time.time()
+            if now - last_emit >= frame_interval:
+                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                if ok:
+                    with state.lock:
+                        state.jpeg_bytes = buf.tobytes()
+                        state.count_in = self.counter.count_in
+                        state.count_out = self.counter.count_out
+                        state.fps = 1.0 / (now - last_emit) if last_emit else 0.0
+                last_emit = now
+
+    def stop(self):
+        self._running = False
+        self.reader.stop()
+
+
+processor = Processor()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import threading
+    t = threading.Thread(target=processor.run, daemon=True)
+    t.start()
+    yield
+    processor.stop()
+
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _mjpeg_generator():
+    boundary = b"--frame"
+    while True:
+        with state.lock:
+            jpeg = state.jpeg_bytes
+        if jpeg is not None:
+            yield (
+                boundary + b"\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
+                + jpeg + b"\r\n"
+            )
+        time.sleep(1.0 / OUTPUT_FPS)
+
+
+@app.get("/video_feed")
+def video_feed():
+    return StreamingResponse(
+        _mjpeg_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/stats")
+def stats():
+    with state.lock:
+        return JSONResponse({
+            "count_in": state.count_in,
+            "count_out": state.count_out,
+            "total": state.count_in + state.count_out,
+            "camera_connected": state.connected,
+            "fps": round(state.fps, 1),
+        })
+
+
+@app.websocket("/ws/count")
+async def ws_count(websocket: WebSocket):
+    await websocket.accept()
+    last_sent = None
+    try:
+        while True:
+            with state.lock:
+                payload = {
+                    "count_in": state.count_in,
+                    "count_out": state.count_out,
+                    "total": state.count_in + state.count_out,
+                    "camera_connected": state.connected,
+                }
+            if payload != last_sent:
+                await websocket.send_text(json.dumps(payload))
+                last_sent = payload
+            await asyncio.sleep(0.3)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket.client_state != WebSocketState.DISCONNECTED:
+            await websocket.close()

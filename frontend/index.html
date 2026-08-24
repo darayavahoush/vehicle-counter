@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vehicle Counter</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Live Vehicle Counter</h1>
+        <span id="status" class="status status--offline">connecting…</span>
+      </header>
+
+      <main>
+        <div class="video-wrap">
+          <img id="stream" alt="Live camera feed" />
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <span class="stat-label">In</span>
+            <span id="count-in" class="stat-value">0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Out</span>
+            <span id="count-out" class="stat-value">0</span>
+          </div>
+          <div class="stat-card stat-card--total">
+            <span class="stat-label">Total</span>
+            <span id="count-total" class="stat-value">0</span>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
