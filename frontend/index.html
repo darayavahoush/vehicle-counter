@@ -3,35 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vehicle Counter</title>
+    <title>Tripwire — vehicle counting console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
-      <header>
-        <h1>Live Vehicle Counter</h1>
-        <span id="status" class="status status--offline">connecting…</span>
+      <header class="console-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-text">
+            <h1>TRIPWIRE</h1>
+            <p class="brand-sub">vehicle counting console</p>
+          </div>
+        </div>
+        <div id="status" class="status status--offline">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-label">connecting</span>
+        </div>
       </header>
 
       <main>
-        <div class="video-wrap">
-          <img id="stream" alt="Live camera feed" />
+        <div class="feed-frame">
+          <div class="feed-frame__corner feed-frame__corner--tl" aria-hidden="true"></div>
+          <div class="feed-frame__corner feed-frame__corner--tr" aria-hidden="true"></div>
+          <div class="feed-frame__corner feed-frame__corner--bl" aria-hidden="true"></div>
+          <div class="feed-frame__corner feed-frame__corner--br" aria-hidden="true"></div>
+
+          <div class="osd osd--top-left">CAM 01 · TRIPWIRE</div>
+          <div class="osd osd--top-right" id="clock">00:00:00</div>
+          <div class="osd osd--bottom-left" id="rec-indicator">
+            <span class="rec-dot" aria-hidden="true"></span>REC
+          </div>
+          <div class="osd osd--bottom-right" id="fps-readout">-- fps</div>
+
+          <img id="stream" alt="Live camera feed with vehicle tracking overlay" />
         </div>
 
-        <div class="stats">
-          <div class="stat-card">
-            <span class="stat-label">In</span>
-            <span id="count-in" class="stat-value">0</span>
+        <div class="readouts">
+          <div class="readout" id="card-in">
+            <span class="readout-label"><span class="readout-glyph" aria-hidden="true">&#8595;</span>in</span>
+            <span class="readout-value readout-value--teal" id="count-in">0000</span>
           </div>
-          <div class="stat-card">
-            <span class="stat-label">Out</span>
-            <span id="count-out" class="stat-value">0</span>
+          <div class="readout" id="card-out">
+            <span class="readout-label"><span class="readout-glyph" aria-hidden="true">&#8593;</span>out</span>
+            <span class="readout-value readout-value--amber" id="count-out">0000</span>
           </div>
-          <div class="stat-card stat-card--total">
-            <span class="stat-label">Total</span>
-            <span id="count-total" class="stat-value">0</span>
+          <div class="readout readout--total" id="card-total">
+            <span class="readout-label"><span class="readout-glyph" aria-hidden="true">&#931;</span>total</span>
+            <span class="readout-value" id="count-total">0000</span>
           </div>
         </div>
+
+        <p class="footnote">counts a vehicle each time it crosses the tripwire line drawn on the feed above</p>
       </main>
     </div>
     <script type="module" src="/src/main.js"></script>

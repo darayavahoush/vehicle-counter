@@ -210,6 +210,7 @@ async def ws_count(websocket: WebSocket):
                     "count_out": state.count_out,
                     "total": state.count_in + state.count_out,
                     "camera_connected": state.connected,
+                    "fps": round(state.fps, 1),
                 }
             if payload != last_sent:
                 await websocket.send_text(json.dumps(payload))
