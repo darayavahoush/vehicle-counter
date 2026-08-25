@@ -11,3 +11,7 @@ backend/demo_videos/
 frontend/node_modules/
 frontend/dist/
 frontend/.env
+
+# vercel
+.vercel/
+.env.local
