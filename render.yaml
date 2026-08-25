@@ -9,6 +9,13 @@ services:
     envVars:
       - key: RTSP_URL
         value: demo_videos/car-detection.mp4
+      # No .onnx model file shipped to this free-tier demo deploy, so pin
+      # to the no-model-file fallback explicitly (main.py would auto-fall
+      # back anyway, but this avoids a "couldn't load model" warning in
+      # the logs on every boot). Run export_yolo_onnx.py + upload the
+      # model to get labeled boxes on your own deployment.
+      - key: DETECTOR_BACKEND
+        value: bgsub
       - key: PROCESS_WIDTH
         value: "640"
       - key: DETECT_EVERY_N_FRAMES

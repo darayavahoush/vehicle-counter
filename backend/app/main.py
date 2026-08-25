@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.websockets import WebSocketState
 
 from app.capture import LatestFrameReader
-from app.detector import BackgroundSubtractionDetector
+from app.detector import build_detector
 from app.tracker import LineCrossingCounter
 
 load_dotenv()
@@ -36,12 +36,26 @@ DETECT_EVERY_N_FRAMES = int(os.getenv("DETECT_EVERY_N_FRAMES", "2"))
 OUTPUT_FPS = float(os.getenv("OUTPUT_FPS", "15"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
 
+# "yolo" gives labeled boxes (car/truck/bus/motorcycle) via a YOLOv8n
+# ONNX model through cv2.dnn — no PyTorch needed on the device. "bgsub"
+# is the older no-label classical-CV fallback if you don't have (or
+# don't want to run) the .onnx file, e.g. on a very constrained device.
+DETECTOR_BACKEND = os.getenv("DETECTOR_BACKEND", "yolo")
+YOLO_ONNX_PATH = os.getenv("YOLO_ONNX_PATH", "models/yolov8n.onnx")
+YOLO_INPUT_SIZE = int(os.getenv("YOLO_INPUT_SIZE", "320"))
+YOLO_CONF_THRESHOLD = float(os.getenv("YOLO_CONF_THRESHOLD", "0.35"))
+YOLO_NMS_THRESHOLD = float(os.getenv("YOLO_NMS_THRESHOLD", "0.45"))
+
 # Counting line as fractions of the processed frame (0..1), so it scales
-# with PROCESS_WIDTH automatically. Default: horizontal line at mid-height.
-LINE_X1 = float(os.getenv("LINE_X1", "0.05"))
-LINE_Y1 = float(os.getenv("LINE_Y1", "0.55"))
-LINE_X2 = float(os.getenv("LINE_X2", "0.95"))
-LINE_Y2 = float(os.getenv("LINE_Y2", "0.55"))
+# with PROCESS_WIDTH automatically. Default here is a VERTICAL line
+# through the middle — correct for a sideview camera, where vehicles
+# travel left<->right across the frame rather than toward/away from it.
+# (For a top-down/angled camera, flip these back to a horizontal line,
+# e.g. 0.05,0.55 -> 0.95,0.55.)
+LINE_X1 = float(os.getenv("LINE_X1", "0.5"))
+LINE_Y1 = float(os.getenv("LINE_Y1", "0.05"))
+LINE_X2 = float(os.getenv("LINE_X2", "0.5"))
+LINE_Y2 = float(os.getenv("LINE_Y2", "0.95"))
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 
@@ -56,6 +70,7 @@ class SharedState:
         self.jpeg_bytes = None
         self.count_in = 0
         self.count_out = 0
+        self.count_by_label = {}
         self.connected = False
         self.fps = 0.0
 
@@ -69,11 +84,33 @@ class Processor:
 
     def __init__(self):
         self.reader = LatestFrameReader(_capture_source).start()
-        self.detector = BackgroundSubtractionDetector()
+        self.detector = self._build_detector()
         self.counter = None  # built once we know frame size
         self._frame_idx = 0
         self._last_boxes = []
         self._running = False
+
+    def _build_detector(self):
+        if DETECTOR_BACKEND == "yolo":
+            try:
+                return build_detector(
+                    "yolo",
+                    onnx_path=YOLO_ONNX_PATH,
+                    input_size=YOLO_INPUT_SIZE,
+                    conf_threshold=YOLO_CONF_THRESHOLD,
+                    nms_threshold=YOLO_NMS_THRESHOLD,
+                )
+            except Exception as e:
+                # Most common cause: the .onnx file hasn't been exported/
+                # copied into place yet (see scripts/export_yolo_onnx.py).
+                # Fall back rather than crashing the whole backend, since
+                # counting-without-labels still beats not running at all.
+                print(
+                    f"[detector] Couldn't load YOLO ONNX model at "
+                    f"'{YOLO_ONNX_PATH}' ({e}); falling back to "
+                    f"background-subtraction (no vehicle labels)."
+                )
+        return build_detector("bgsub")
 
     def _build_line(self, w, h):
         line = ((LINE_X1 * w, LINE_Y1 * h), (LINE_X2 * w, LINE_Y2 * h))
@@ -88,13 +125,16 @@ class Processor:
             x, y, bw, bh = t.box
             cv2.rectangle(frame, (int(x), int(y)), (int(x + bw), int(y + bh)), (60, 220, 60), 2)
             cv2.putText(
-                frame, f"#{t.id}", (int(x), int(y) - 6),
+                frame, f"#{t.id} {t.label}", (int(x), int(y) - 6),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 220, 60), 1, cv2.LINE_AA,
             )
 
+        breakdown = "  ".join(f"{k}:{v}" for k, v in sorted(self.counter.count_by_label.items()))
         label = f"IN: {self.counter.count_in}   OUT: {self.counter.count_out}   TOTAL: {self.counter.total}"
+        if breakdown:
+            label += f"   ({breakdown})"
         cv2.rectangle(frame, (0, 0), (w, 30), (0, 0, 0), -1)
-        cv2.putText(frame, label, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, label, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
         return frame
 
     def run(self):
@@ -133,6 +173,7 @@ class Processor:
                         state.jpeg_bytes = buf.tobytes()
                         state.count_in = self.counter.count_in
                         state.count_out = self.counter.count_out
+                        state.count_by_label = dict(self.counter.count_by_label)
                         state.fps = 1.0 / (now - last_emit) if last_emit else 0.0
                 last_emit = now
 
@@ -193,6 +234,7 @@ def stats():
             "count_in": state.count_in,
             "count_out": state.count_out,
             "total": state.count_in + state.count_out,
+            "count_by_label": state.count_by_label,
             "camera_connected": state.connected,
             "fps": round(state.fps, 1),
         })
@@ -209,6 +251,7 @@ async def ws_count(websocket: WebSocket):
                     "count_in": state.count_in,
                     "count_out": state.count_out,
                     "total": state.count_in + state.count_out,
+                    "count_by_label": state.count_by_label,
                     "camera_connected": state.connected,
                     "fps": round(state.fps, 1),
                 }

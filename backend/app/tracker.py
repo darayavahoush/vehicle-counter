@@ -15,9 +15,15 @@ flip tells us which way (e.g. "in" vs "out").
 import math
 
 
-def _centroid(box):
-    x, y, w, h = box
+def _centroid(detection):
+    # Accepts either a plain (x, y, w, h) box or a detector.Detection
+    # (x, y, w, h, label, conf) — only the first four fields matter here.
+    x, y, w, h = detection[0], detection[1], detection[2], detection[3]
     return (x + w / 2.0, y + h / 2.0)
+
+
+def _label_of(detection):
+    return detection[4] if len(detection) > 4 else "vehicle"
 
 
 def _side_of_line(point, line):
@@ -33,15 +39,25 @@ def _side_of_line(point, line):
 
 
 class Track:
-    __slots__ = ("id", "centroid", "box", "side", "disappeared", "counted")
+    __slots__ = ("id", "centroid", "box", "label", "side", "disappeared", "counted", "_label_votes")
 
-    def __init__(self, track_id, centroid, box, side):
+    def __init__(self, track_id, centroid, box, label, side):
         self.id = track_id
         self.centroid = centroid
         self.box = box
+        self.label = label
         self.side = side
         self.disappeared = 0
         self.counted = False
+        self._label_votes = {label: 1}
+
+    def _vote_label(self, label):
+        # A single frame's classification can wobble (car vs truck at a
+        # bad angle); keep whichever label has been seen most often over
+        # this track's lifetime so the on-screen label — and the label
+        # locked in at counting time — doesn't flicker.
+        self._label_votes[label] = self._label_votes.get(label, 0) + 1
+        self.label = max(self._label_votes, key=self._label_votes.get)
 
 
 class LineCrossingCounter:
@@ -63,17 +79,19 @@ class LineCrossingCounter:
 
         self.count_in = 0
         self.count_out = 0
+        self.count_by_label = {}
 
     @property
     def total(self):
         return self.count_in + self.count_out
 
-    def update(self, boxes):
+    def update(self, detections_in):
         """
-        boxes: list of (x, y, w, h) detections for the current frame.
+        detections_in: list of (x, y, w, h) or detector.Detection objects
+                       for the current frame.
         Returns the current list of active Track objects (for drawing).
         """
-        detections = [(_centroid(b), b) for b in boxes]
+        detections = [(_centroid(d), (d[0], d[1], d[2], d[3]), _label_of(d)) for d in detections_in]
         unmatched_detections = set(range(len(detections)))
         matched_track_ids = set()
 
@@ -82,14 +100,15 @@ class LineCrossingCounter:
         for track_id, track in self._tracks.items():
             best_idx, best_dist = None, self.max_match_distance
             for idx in unmatched_detections:
-                c, _ = detections[idx]
+                c, _, _ = detections[idx]
                 d = math.hypot(c[0] - track.centroid[0], c[1] - track.centroid[1])
                 if d < best_dist:
                     best_idx, best_dist = idx, d
 
             if best_idx is not None:
-                centroid, box = detections[best_idx]
+                centroid, box, label = detections[best_idx]
                 new_side = _side_of_line(centroid, self.line)
+                track._vote_label(label)
 
                 # Crossing = side flipped (and wasn't already counted this pass).
                 if track.side != 0 and new_side != 0 and new_side != track.side and not track.counted:
@@ -98,6 +117,7 @@ class LineCrossingCounter:
                     else:
                         self.count_out += 1
                     track.counted = True
+                    self.count_by_label[track.label] = self.count_by_label.get(track.label, 0) + 1
 
                 track.centroid = centroid
                 track.box = box
@@ -108,9 +128,9 @@ class LineCrossingCounter:
 
         # Detections with no matching track become new tracks.
         for idx in unmatched_detections:
-            centroid, box = detections[idx]
+            centroid, box, label = detections[idx]
             side = _side_of_line(centroid, self.line)
-            self._tracks[self._next_id] = Track(self._next_id, centroid, box, side)
+            self._tracks[self._next_id] = Track(self._next_id, centroid, box, label, side)
             self._next_id += 1
 
         # Age out tracks that weren't matched this frame; drop stale ones.
