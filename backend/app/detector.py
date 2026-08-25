@@ -86,13 +86,19 @@ class BackgroundSubtractionDetector:
 
 
 # COCO class ids for the vehicle classes we care about (YOLOv8's default
-# training set is COCO). Anything else (person, dog, etc.) is discarded.
+# training set is COCO). Anything else (dog, bicycle, etc.) is discarded.
 _COCO_VEHICLE_CLASSES = {
     2: "car",
     3: "motorcycle",
     5: "bus",
     7: "truck",
 }
+
+# COCO class id 0 is "person". Kept separate from the vehicle classes
+# above so callers can opt in independently (occupancy estimation wants
+# person boxes; vehicle counting/tracking never should — a pedestrian
+# must never be counted as a "vehicle" crossing the line).
+_COCO_PERSON_CLASS = {0: "person"}
 
 
 class YoloOnnxDetector:
@@ -105,11 +111,17 @@ class YoloOnnxDetector:
         conf_threshold=0.35,
         nms_threshold=0.45,
         classes=None,
+        detect_person=False,
     ):
         self.input_size = input_size
         self.conf_threshold = conf_threshold
         self.nms_threshold = nms_threshold
-        self.classes = classes or _COCO_VEHICLE_CLASSES
+        self.classes = dict(classes or _COCO_VEHICLE_CLASSES)
+        # Same forward pass already scores all 80 COCO classes per box —
+        # adding "person" to the set we keep costs zero extra inference,
+        # it just stops discarding those rows in postprocessing.
+        if detect_person:
+            self.classes.update(_COCO_PERSON_CLASS)
 
         self._net = cv2.dnn.readNetFromONNX(onnx_path)
         # CPU is the only backend/target guaranteed present everywhere

@@ -34,3 +34,12 @@ services:
         value: "0.55"
       - key: CORS_ORIGINS
         value: "http://localhost:5173"
+      # Optional Postgres persistence (see backend/app/db.py). Left unset
+      # here (sync: false = "set this manually in the Render dashboard,
+      # don't store the value in this file") since it's a credential and
+      # this demo deploy doesn't need it to keep working. If you do want
+      # crossing events persisted, set this to a Neon connection string —
+      # Render's own free Postgres tier expires after 30 days, which would
+      # silently drop this data; Neon's free tier doesn't expire.
+      - key: DATABASE_URL
+        sync: false

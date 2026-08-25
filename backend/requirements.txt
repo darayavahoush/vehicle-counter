@@ -3,3 +3,7 @@ uvicorn[standard]>=0.30.6
 opencv-python-headless>=4.10.0
 numpy>=1.26,<3
 python-dotenv>=1.0.1
+# Optional Postgres persistence for crossing events (see app/db.py). Adds
+# ~3MB on the Pi; skip DATABASE_URL in .env if you don't want this at all
+# (db.py no-ops cleanly when it's unset).
+psycopg2-binary>=2.9.9

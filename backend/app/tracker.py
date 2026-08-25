@@ -89,11 +89,21 @@ class LineCrossingCounter:
         """
         detections_in: list of (x, y, w, h) or detector.Detection objects
                        for the current frame.
-        Returns the current list of active Track objects (for drawing).
+
+        Returns (tracks, events):
+          tracks: current list of active Track objects (for drawing).
+          events: list of dicts, one per line-crossing that happened THIS
+                  frame — {"track_id", "label", "direction"} where
+                  direction is "in" or "out". Reported explicitly here
+                  (rather than callers diffing count_in/count_out deltas)
+                  so main.py can attach a timestamp + occupancy snapshot
+                  and log each crossing as its own row, without guessing
+                  which crossing a delta of >1 corresponds to.
         """
         detections = [(_centroid(d), (d[0], d[1], d[2], d[3]), _label_of(d)) for d in detections_in]
         unmatched_detections = set(range(len(detections)))
         matched_track_ids = set()
+        events = []
 
         # Greedy nearest-neighbor matching: for each existing track, find the
         # closest unmatched detection within range.
@@ -112,12 +122,14 @@ class LineCrossingCounter:
 
                 # Crossing = side flipped (and wasn't already counted this pass).
                 if track.side != 0 and new_side != 0 and new_side != track.side and not track.counted:
-                    if new_side > track.side:
+                    direction = "in" if new_side > track.side else "out"
+                    if direction == "in":
                         self.count_in += 1
                     else:
                         self.count_out += 1
                     track.counted = True
                     self.count_by_label[track.label] = self.count_by_label.get(track.label, 0) + 1
+                    events.append({"track_id": track.id, "label": track.label, "direction": direction})
 
                 track.centroid = centroid
                 track.box = box
@@ -142,4 +154,4 @@ class LineCrossingCounter:
             tid: t for tid, t in self._tracks.items() if t.disappeared <= self.max_disappeared
         }
 
-        return list(self._tracks.values())
+        return list(self._tracks.values()), events

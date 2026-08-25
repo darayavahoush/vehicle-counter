@@ -251,6 +251,127 @@ body {
   font-family: var(--font-mono);
 }
 
+/* ---- Label breakdown chips + occupancy ---- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.chip-value {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chip--occupancy {
+  border-color: var(--border-strong);
+}
+.chip--occupancy .chip-value {
+  color: var(--amber);
+  text-shadow: 0 0 10px var(--amber-glow);
+}
+
+/* ---- Recent crossings panel ---- */
+
+.events-panel {
+  margin-top: 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px 6px;
+}
+
+.events-panel__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.events-panel__header h2 {
+  margin: 0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.events-panel__hint {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.events-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.events-list__empty {
+  padding: 10px 0 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.event-row:last-child {
+  border-bottom: none;
+}
+
+.event-row__time {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  width: 64px;
+}
+
+.event-row__dir {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.event-row__dir--in { color: var(--teal); }
+.event-row__dir--out { color: var(--amber); }
+
+.event-row__label {
+  color: var(--text);
+  flex: 1;
+}
+
+.event-row__occ {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
 /* ---- Responsive ---- */
 
 @media (max-width: 480px) {
