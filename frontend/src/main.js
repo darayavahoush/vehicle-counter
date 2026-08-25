@@ -12,6 +12,7 @@ const statusLabelEl = document.getElementById("status-label");
 const clockEl = document.getElementById("clock");
 const fpsEl = document.getElementById("fps-readout");
 const breakdownEl = document.getElementById("breakdown");
+const occupancyEl = document.getElementById("occupancy");
 const logListEl = document.getElementById("log-list");
 
 const readouts = {
@@ -54,6 +55,20 @@ function updateBreakdown(countByLabel) {
       return `<span class="breakdown-chip">${label} <strong>${pad4(total)}</strong></span>`;
     })
     .join("");
+}
+
+function updateOccupancy(estimate) {
+  if (!estimate || !estimate.total) {
+    occupancyEl.innerHTML = "";
+    return;
+  }
+  const parts = Object.entries(estimate.by_label || {})
+    .filter(([, n]) => n > 0)
+    .map(([label, n]) => `${label} ~${n}`)
+    .join(" &middot; ");
+  occupancyEl.innerHTML =
+    `<span class="occupancy-total">&asymp; ${Math.round(estimate.total)} people estimated</span>` +
+    (parts ? `<span class="occupancy-breakdown">${parts}</span>` : "");
 }
 
 function formatClockTime(unixSeconds) {
@@ -107,6 +122,7 @@ function connectWebSocket() {
     updateReadout("out", data.count_out);
     updateReadout("total", data.total);
     updateBreakdown(data.count_by_label);
+    updateOccupancy(data.estimated_occupancy);
     setStatus(data.camera_connected);
     if (typeof data.fps === "number") {
       fpsEl.textContent = `${data.fps.toFixed(1)} fps`;

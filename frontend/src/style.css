@@ -375,3 +375,21 @@ body {
     animation: none;
   }
 }
+
+.occupancy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 8px;
+  font-family: inherit;
+}
+.occupancy-total {
+  font-weight: 700;
+  color: #4fb3a6;
+  font-size: 0.95rem;
+}
+.occupancy-breakdown {
+  color: #999;
+  font-size: 0.8rem;
+}

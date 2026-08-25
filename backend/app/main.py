@@ -26,6 +26,7 @@ from starlette.websockets import WebSocketState
 from app.capture import LatestFrameReader
 from app.detector import BackgroundSubtractionDetector, YoloOnnxDetector
 from app.tracker import LineCrossingCounter
+from app import db
 
 load_dotenv()
 
@@ -176,6 +177,11 @@ class Processor:
                         state.fps = 1.0 / (now - last_emit) if last_emit else 0.0
                         for ev in events:
                             state.events.appendleft(ev)
+                    for ev in events:
+                        db.log_event(
+                            ev["direction"], ev["label"],
+                            PEOPLE_PER_VEHICLE.get(ev["label"], PEOPLE_PER_VEHICLE["Vehicle"]),
+                        )
                 last_emit = now
             elif events:
                 # Even if we're not due to publish a frame, don't drop a
@@ -186,6 +192,11 @@ class Processor:
                     state.count_by_label = dict(self.counter.count_by_label)
                     for ev in events:
                         state.events.appendleft(ev)
+                for ev in events:
+                    db.log_event(
+                        ev["direction"], ev["label"],
+                        PEOPLE_PER_VEHICLE.get(ev["label"], PEOPLE_PER_VEHICLE["Vehicle"]),
+                    )
 
     def stop(self):
         self._running = False
@@ -197,6 +208,7 @@ processor = Processor()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    db.init_db()
     import threading
     t = threading.Thread(target=processor.run, daemon=True)
     t.start()
@@ -237,17 +249,47 @@ def video_feed():
     )
 
 
+# Rough average occupancy per vehicle type — illustrative estimates, not
+# measured data. Adjust to match your local context if you have better
+# numbers (e.g. school-zone traffic skews cars higher).
+PEOPLE_PER_VEHICLE = {
+    "Car": 2.5,
+    "Motorbike": 1.3,
+    "Bus": 20.0,
+    "Truck": 1.5,
+    "Vehicle": 2.0,  # generic bg-subtraction fallback label
+}
+
+
+def estimate_occupancy(count_by_label: dict) -> dict:
+    by_label = {}
+    total = 0.0
+    for label, counts in (count_by_label or {}).items():
+        vehicle_total = (counts.get("in", 0) if isinstance(counts, dict) else 0) + \
+                         (counts.get("out", 0) if isinstance(counts, dict) else 0)
+        multiplier = PEOPLE_PER_VEHICLE.get(label, PEOPLE_PER_VEHICLE["Vehicle"])
+        est = round(vehicle_total * multiplier, 1)
+        by_label[label] = est
+        total += est
+    return {"total": round(total, 1), "by_label": by_label}
+
+
 @app.get("/stats")
 def stats():
     with state.lock:
-        return JSONResponse({
+        payload = {
             "count_in": state.count_in,
             "count_out": state.count_out,
             "total": state.count_in + state.count_out,
             "count_by_label": state.count_by_label,
+            "estimated_occupancy": estimate_occupancy(state.count_by_label),
+            "people_per_vehicle": PEOPLE_PER_VEHICLE,
             "camera_connected": state.connected,
             "fps": round(state.fps, 1),
-        })
+            "persisted": db.enabled(),
+        }
+    payload["occupancy_summary"] = db.fetch_occupancy_summary()
+    return JSONResponse(payload)
 
 
 @app.get("/events")
@@ -256,6 +298,13 @@ def events(limit: int = 50):
     track_id, confidence, timestamp (unix seconds)."""
     with state.lock:
         return JSONResponse(list(state.events)[:limit])
+
+
+@app.get("/events/history")
+def events_history(limit: int = 50):
+    """Persisted crossing events from Postgres (survives restarts).
+    Empty list if DATABASE_URL isn't set — check /stats.persisted first."""
+    return JSONResponse(db.fetch_recent_events(limit))
 
 
 @app.websocket("/ws/count")
@@ -272,6 +321,7 @@ async def ws_count(websocket: WebSocket):
                     "count_out": state.count_out,
                     "total": state.count_in + state.count_out,
                     "count_by_label": state.count_by_label,
+                    "estimated_occupancy": estimate_occupancy(state.count_by_label),
                     "camera_connected": state.connected,
                     "fps": round(state.fps, 1),
                     "latest_event": latest_event,
@@ -282,6 +332,12 @@ async def ws_count(websocket: WebSocket):
             await asyncio.sleep(0.3)
     except WebSocketDisconnect:
         pass
+    except RuntimeError:
+        # socket was already closing when we tried to send — harmless
+        pass
     finally:
         if websocket.client_state != WebSocketState.DISCONNECTED:
-            await websocket.close()
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass
