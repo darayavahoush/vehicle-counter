@@ -4,7 +4,7 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt && bash backend/scripts/download_demo_video.sh"
+    buildCommand: "pip install -r backend/requirements.txt && mkdir -p backend/demo_videos && curl -L -o backend/demo_videos/car-detection.mp4 https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/car-detection.mp4"
     startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: RTSP_URL
