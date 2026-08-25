@@ -3,12 +3,11 @@ backend/.venv/
 backend/__pycache__/
 backend/app/__pycache__/
 backend/.env
-backend/models/*.onnx
+backend/demo_videos/
+*.pt
 *.pyc
 
 # frontend
 frontend/node_modules/
 frontend/dist/
 frontend/.env
-.vercel
-.env*

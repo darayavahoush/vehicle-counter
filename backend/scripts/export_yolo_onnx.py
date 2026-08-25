@@ -1,42 +1,45 @@
+#!/usr/bin/env python3
 """
-One-time export step: YOLOv8n (PyTorch) -> ONNX.
+One-time export: YOLOv8n -> ONNX, sized for cheap CPU inference (Render's
+free tier, a Raspberry Pi, etc).
 
-Run this on your dev machine (Mac/PC), NOT on the Raspberry Pi. The Pi
-only ever needs the resulting .onnx file — it loads it via OpenCV's
-cv2.dnn, so it never needs PyTorch, ultralytics, or onnxruntime
-installed. That's the whole point of doing it this way: keeps the Pi
-side to just `opencv-python-headless`.
+Run this once on any normal machine — it needs ultralytics + torch, which
+are NOT needed on the actual inference device. Only the resulting small
+.onnx file needs to reach the backend / Pi.
 
 Usage:
-    pip install -r backend/requirements-export.txt
-    python backend/scripts/export_yolo_onnx.py
-
-Produces backend/models/yolov8n.onnx (~12MB). Copy that one file to
-the Pi (e.g. scp) into the same backend/models/ path, or point
-YOLO_ONNX_PATH at wherever you put it.
+    pip install -r requirements-export.txt
+    python scripts/export_yolo_onnx.py --imgsz 320
 """
-
-import os
+import argparse
+import shutil
+from pathlib import Path
 
 from ultralytics import YOLO
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
-IMG_SIZE = int(os.getenv("YOLO_EXPORT_IMG_SIZE", "320"))  # match main.py's YOLO_INPUT_SIZE
-
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    model = YOLO("yolov8n.pt")  # downloads the pretrained COCO weights on first run
-    exported_path = model.export(format="onnx", imgsz=IMG_SIZE, simplify=True, opset=12)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--imgsz", type=int, default=320,
+        help="Must match YOLO_INPUT_SIZE in .env — the model only runs at this size.",
+    )
+    parser.add_argument("--out", default=None, help="Output path (default: backend/models/yolov8n.onnx)")
+    args = parser.parse_args()
 
-    dest = os.path.join(OUTPUT_DIR, "yolov8n.onnx")
-    if os.path.abspath(exported_path) != os.path.abspath(dest):
-        os.replace(exported_path, dest)
+    model = YOLO("yolov8n.pt")  # auto-downloads the pretrained COCO checkpoint
+    exported = model.export(format="onnx", imgsz=args.imgsz, opset=12)
 
-    size_mb = os.path.getsize(dest) / (1024 * 1024)
-    print(f"\nExported {dest} ({size_mb:.1f} MB) at input size {IMG_SIZE}x{IMG_SIZE}.")
-    print("Copy this one file to the Pi, e.g.:")
-    print(f"  scp {dest} pi@<pi-ip>:~/vehicle-counter/backend/models/yolov8n.onnx")
+    out_path = Path(args.out) if args.out else Path(__file__).parent.parent / "models" / "yolov8n.onnx"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(exported, out_path)
+
+    size_mb = out_path.stat().st_size / (1024 * 1024)
+    print(f"\nExported {out_path} ({size_mb:.1f} MB) at input size {args.imgsz}x{args.imgsz}.")
+    print("Commit this file to the repo (git add backend/models/yolov8n.onnx) — the")
+    print("backend loads it directly via cv2.dnn, no PyTorch needed at runtime.")
+    print("\nDon't commit yolov8n.pt (the raw checkpoint this script downloaded) —")
+    print("only the exported .onnx is needed.")
 
 
 if __name__ == "__main__":

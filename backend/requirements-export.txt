@@ -1,6 +1,3 @@
-# Only needed to run scripts/export_yolo_onnx.py ONCE on a dev machine.
-# The Raspberry Pi / production backend never installs this file — it
-# just loads the resulting .onnx through cv2.dnn (see requirements.txt).
 ultralytics>=8.3.0
-onnx>=1.16.0
+onnx>=1.15.0
 onnxsim>=0.4.36

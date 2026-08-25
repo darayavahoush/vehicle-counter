@@ -9,6 +9,7 @@ thread, continuously grabbing frames and discarding all but the most
 recent one, so processing always sees "now", not a growing backlog.
 """
 
+import os
 import threading
 import time
 import cv2
@@ -22,6 +23,9 @@ class LatestFrameReader:
         """
         self.source = source
         self.reconnect_delay = reconnect_delay
+        # A local video file "disconnecting" just means it hit EOF — loop it
+        # instantly instead of treating it like a dropped camera connection.
+        self._is_local_file = isinstance(source, str) and os.path.isfile(source)
         self._cap = None
         self._frame = None
         self._lock = threading.Lock()
@@ -55,6 +59,10 @@ class LatestFrameReader:
 
             ok, frame = self._cap.read()
             if not ok:
+                if self._is_local_file:
+                    # End of file, not a dropped connection — loop instantly.
+                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
                 self._connected = False
                 time.sleep(self.reconnect_delay)
                 self._cap.release()

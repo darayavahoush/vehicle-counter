@@ -4,18 +4,11 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt && mkdir -p backend/demo_videos && curl -L -o backend/demo_videos/car-detection.mp4 https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/car-detection.mp4"
+    buildCommand: "pip install -r backend/requirements.txt && mkdir -p backend/demo_videos && curl -L -o backend/demo_videos/sideview.mp4 https://raw.githubusercontent.com/Lab-Work/ITS2017_Validation/master/sample.mp4"
     startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: RTSP_URL
-        value: demo_videos/car-detection.mp4
-      # No .onnx model file shipped to this free-tier demo deploy, so pin
-      # to the no-model-file fallback explicitly (main.py would auto-fall
-      # back anyway, but this avoids a "couldn't load model" warning in
-      # the logs on every boot). Run export_yolo_onnx.py + upload the
-      # model to get labeled boxes on your own deployment.
-      - key: DETECTOR_BACKEND
-        value: bgsub
+        value: demo_videos/sideview.mp4
       - key: PROCESS_WIDTH
         value: "640"
       - key: DETECT_EVERY_N_FRAMES
@@ -24,22 +17,25 @@ services:
         value: "15"
       - key: JPEG_QUALITY
         value: "70"
+      - key: DETECTOR_BACKEND
+        value: "yolo"
+      - key: YOLO_MODEL_PATH
+        value: "models/yolov8n.onnx"
+      - key: YOLO_INPUT_SIZE
+        value: "320"
+      - key: YOLO_CONF_THRESHOLD
+        value: "0.4"
+      - key: YOLO_NMS_THRESHOLD
+        value: "0.45"
       - key: LINE_X1
-        value: "0.05"
+        value: "0.5"
       - key: LINE_Y1
         value: "0.55"
       - key: LINE_X2
-        value: "0.95"
+        value: "0.5"
       - key: LINE_Y2
-        value: "0.55"
+        value: "0.9"
+      - key: EVENT_LOG_SIZE
+        value: "200"
       - key: CORS_ORIGINS
-        value: "http://localhost:5173"
-      # Optional Postgres persistence (see backend/app/db.py). Left unset
-      # here (sync: false = "set this manually in the Render dashboard,
-      # don't store the value in this file") since it's a credential and
-      # this demo deploy doesn't need it to keep working. If you do want
-      # crossing events persisted, set this to a Neon connection string —
-      # Render's own free Postgres tier expires after 30 days, which would
-      # silently drop this data; Neon's free tier doesn't expire.
-      - key: DATABASE_URL
-        sync: false
+        value: "https://tripwire-inky.vercel.app"

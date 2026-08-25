@@ -1,41 +1,93 @@
 """
-Vehicle detectors, both behind the same detect(frame) -> list[Detection]
-interface, so main.py and tracker.py never need to know which one is
-running.
+Vehicle detectors. Both expose the same interface:
 
-Two options:
+    detect(frame) -> list of (x, y, w, h, label, confidence)
 
-1. BackgroundSubtractionDetector — MOG2 + contour filtering. Cheapest
-   possible option on CPU, but gives no vehicle *label* (just "vehicle"),
-   and only works well for a genuinely fixed camera.
+so tracker.py and main.py don't care which one is in use.
 
-2. YoloOnnxDetector — YOLOv8n exported to ONNX, run through OpenCV's
-   built-in cv2.dnn module. No PyTorch and no extra runtime dependency
-   on the device that actually runs this (opencv-python-headless already
-   ships dnn) — the export to ONNX happens once, on a dev machine, via
-   scripts/export_yolo_onnx.py. This is what gives per-box vehicle
-   labels (car / truck / bus / motorcycle) and is what should run on a
-   Raspberry Pi: the .onnx file is ~12MB and inference at a small input
-   size (default 320x320) is fast enough on a Pi 4/5 CPU at 15 fps if
-   you keep DETECT_EVERY_N_FRAMES >= 2 (see main.py / README).
+YoloOnnxDetector (default): YOLOv8n exported to ONNX, run through OpenCV's
+built-in cv2.dnn module. This is the one that actually labels vehicle type
+(Car / Truck / Bus / Motorbike) via COCO class IDs. No PyTorch or other ML
+runtime needed on the inference device — opencv-python(-headless) already
+ships cv2.dnn. The ONNX export step happens once, on a normal machine (see
+scripts/export_yolo_onnx.py); only the small resulting .onnx file needs to
+reach a Raspberry Pi.
 
-Pick between them with build_detector(kind, **kwargs).
+BackgroundSubtractionDetector: the original zero-model fallback. Cheaper
+than any DL detector, but can't tell you vehicle type — everything comes
+back labeled "Vehicle". Useful if a specific Pi is too weak even for
+YOLOv8n at a small input size, or as a sanity check when tuning a new
+camera's tripwire line.
 """
-
-from collections import namedtuple
 
 import cv2
 import numpy as np
 
-# (x, y, w, h) box in frame pixel coords, a string label, and a 0..1
-# confidence (None for the background-subtraction detector, which has
-# no real notion of confidence).
-Detection = namedtuple("Detection", ["x", "y", "w", "h", "label", "conf"])
+# COCO class indices YOLOv8 was trained on, restricted to vehicle types.
+COCO_VEHICLE_CLASSES = {
+    2: "Car",
+    3: "Motorbike",
+    5: "Bus",
+    7: "Truck",
+}
+
+
+def _postprocess_yolo_output(output, frame_w, frame_h, input_size, conf_threshold, nms_threshold):
+    """Pure function (no cv2.dnn network needed) so it's independently testable.
+
+    output: raw YOLOv8 ONNX output, shape (1, 84, N) — 4 box coords + 80
+    COCO class scores per candidate detection, no separate objectness score
+    (YOLOv8 dropped that vs earlier YOLO versions).
+    """
+    preds = output[0].T  # -> (N, 84)
+    x_scale, y_scale = frame_w / input_size, frame_h / input_size
+
+    boxes, confidences, class_ids = [], [], []
+    for row in preds:
+        class_scores = row[4:]
+        class_id = int(np.argmax(class_scores))
+        confidence = float(class_scores[class_id])
+        if confidence < conf_threshold or class_id not in COCO_VEHICLE_CLASSES:
+            continue
+        cx, cy, bw, bh = row[0:4]
+        x = (cx - bw / 2) * x_scale
+        y = (cy - bh / 2) * y_scale
+        boxes.append([int(x), int(y), int(bw * x_scale), int(bh * y_scale)])
+        confidences.append(confidence)
+        class_ids.append(class_id)
+
+    results = []
+    if boxes:
+        indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, nms_threshold)
+        for i in np.array(indices).flatten():
+            x, y, bw, bh = boxes[i]
+            results.append((x, y, bw, bh, COCO_VEHICLE_CLASSES[class_ids[i]], confidences[i]))
+    return results
+
+
+class YoloOnnxDetector:
+    def __init__(self, model_path, input_size=320, conf_threshold=0.4, nms_threshold=0.45):
+        self.net = cv2.dnn.readNetFromONNX(model_path)
+        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        self.input_size = input_size
+        self.conf_threshold = conf_threshold
+        self.nms_threshold = nms_threshold
+
+    def detect(self, frame):
+        h, w = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(
+            frame, scalefactor=1 / 255.0, size=(self.input_size, self.input_size),
+            swapRB=True, crop=False,
+        )
+        self.net.setInput(blob)
+        output = self.net.forward()
+        return _postprocess_yolo_output(
+            output, w, h, self.input_size, self.conf_threshold, self.nms_threshold
+        )
 
 
 class BackgroundSubtractionDetector:
-    """Classical CV fallback — no ML model, no labels beyond 'vehicle'."""
-
     def __init__(
         self,
         min_area=900,
@@ -61,17 +113,13 @@ class BackgroundSubtractionDetector:
 
     def detect(self, frame):
         fg_mask = self._bg.apply(frame)
-
-        # Shadows are labeled 127 by MOG2; drop them, keep solid foreground (255).
         _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
-
-        # Clean up noise, then close gaps so a vehicle forms one solid blob.
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel_open)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel_close, iterations=2)
 
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        detections = []
+        results = []
         for c in contours:
             area = cv2.contourArea(c)
             if area < self.min_area or area > self.max_area:
@@ -80,117 +128,8 @@ class BackgroundSubtractionDetector:
             aspect = w / float(h)
             if aspect < self.min_aspect or aspect > self.max_aspect:
                 continue
-            detections.append(Detection(x, y, w, h, "vehicle", None))
+            # No classifier here, so label is generic — this detector can
+            # tell you *something* is there, not *what*.
+            results.append((x, y, w, h, "Vehicle", 1.0))
 
-        return detections
-
-
-# COCO class ids for the vehicle classes we care about (YOLOv8's default
-# training set is COCO). Anything else (dog, bicycle, etc.) is discarded.
-_COCO_VEHICLE_CLASSES = {
-    2: "car",
-    3: "motorcycle",
-    5: "bus",
-    7: "truck",
-}
-
-# COCO class id 0 is "person". Kept separate from the vehicle classes
-# above so callers can opt in independently (occupancy estimation wants
-# person boxes; vehicle counting/tracking never should — a pedestrian
-# must never be counted as a "vehicle" crossing the line).
-_COCO_PERSON_CLASS = {0: "person"}
-
-
-class YoloOnnxDetector:
-    """YOLOv8n via cv2.dnn — no PyTorch/onnxruntime needed on the device."""
-
-    def __init__(
-        self,
-        onnx_path,
-        input_size=320,
-        conf_threshold=0.35,
-        nms_threshold=0.45,
-        classes=None,
-        detect_person=False,
-    ):
-        self.input_size = input_size
-        self.conf_threshold = conf_threshold
-        self.nms_threshold = nms_threshold
-        self.classes = dict(classes or _COCO_VEHICLE_CLASSES)
-        # Same forward pass already scores all 80 COCO classes per box —
-        # adding "person" to the set we keep costs zero extra inference,
-        # it just stops discarding those rows in postprocessing.
-        if detect_person:
-            self.classes.update(_COCO_PERSON_CLASS)
-
-        self._net = cv2.dnn.readNetFromONNX(onnx_path)
-        # CPU is the only backend/target guaranteed present everywhere
-        # (including a Pi with no GPU), so pin it explicitly rather than
-        # relying on OpenCV's default.
-        self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-        self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-
-    def detect(self, frame):
-        h, w = frame.shape[:2]
-        size = self.input_size
-
-        # Letterbox resize: pad to square with the original aspect ratio
-        # kept, so the model doesn't see a squashed image. scale/pad are
-        # kept so we can map boxes back to original frame coordinates.
-        scale = min(size / w, size / h)
-        new_w, new_h = int(w * scale), int(h * scale)
-        resized = cv2.resize(frame, (new_w, new_h))
-        pad_x, pad_y = (size - new_w) // 2, (size - new_h) // 2
-        canvas = np.full((size, size, 3), 114, dtype=np.uint8)
-        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
-
-        blob = cv2.dnn.blobFromImage(canvas, 1 / 255.0, (size, size), swapRB=True, crop=False)
-        self._net.setInput(blob)
-        raw = self._net.forward()  # shape (1, 84, N) for YOLOv8: 4 box + 80 class scores
-
-        return self._postprocess(raw, scale, pad_x, pad_y)
-
-    def _postprocess(self, raw, scale, pad_x, pad_y):
-        # (1, 84, N) -> (N, 84): rows are candidate boxes, columns are
-        # [cx, cy, w, h, class_0_score, ..., class_79_score].
-        preds = raw[0].T
-
-        boxes, confidences, class_ids = [], [], []
-        for row in preds:
-            class_scores = row[4:]
-            class_id = int(np.argmax(class_scores))
-            conf = float(class_scores[class_id])
-            if conf < self.conf_threshold or class_id not in self.classes:
-                continue
-
-            cx, cy, bw, bh = row[:4]
-            # Undo letterbox padding/scale to get back to original frame coords.
-            x = (cx - bw / 2 - pad_x) / scale
-            y = (cy - bh / 2 - pad_y) / scale
-            bw, bh = bw / scale, bh / scale
-
-            boxes.append([int(x), int(y), int(bw), int(bh)])
-            confidences.append(conf)
-            class_ids.append(class_id)
-
-        if not boxes:
-            return []
-
-        keep = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_threshold, self.nms_threshold)
-        keep = keep.flatten() if len(keep) else []
-
-        detections = []
-        for i in keep:
-            x, y, bw, bh = boxes[i]
-            detections.append(
-                Detection(max(x, 0), max(y, 0), bw, bh, self.classes[class_ids[i]], confidences[i])
-            )
-        return detections
-
-
-def build_detector(kind, **kwargs):
-    if kind == "yolo":
-        return YoloOnnxDetector(**kwargs)
-    if kind == "bgsub":
-        return BackgroundSubtractionDetector(**kwargs)
-    raise ValueError(f"Unknown detector kind: {kind!r} (expected 'yolo' or 'bgsub')")
+        return results

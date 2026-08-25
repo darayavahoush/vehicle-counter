@@ -60,15 +60,14 @@
           </div>
         </div>
 
-        <div class="chips" id="label-chips"></div>
+        <div class="breakdown" id="breakdown" aria-label="Counts by vehicle type"></div>
 
-        <section class="events-panel">
-          <div class="events-panel__header">
-            <h2>recent crossings</h2>
-            <span class="events-panel__hint" id="events-hint"></span>
-          </div>
-          <ul class="events-list" id="events-list"></ul>
-        </section>
+        <div class="log">
+          <div class="log-header">crossing log</div>
+          <ul class="log-list" id="log-list">
+            <li class="log-empty">waiting for the first crossing…</li>
+          </ul>
+        </div>
 
         <p class="footnote">counts a vehicle each time it crosses the tripwire line drawn on the feed above</p>
       </main>
