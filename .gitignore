@@ -14,4 +14,6 @@ frontend/.env
 
 # vercel
 .vercel/
+.env.vercel-check
+.env.vercel*
 .env.local
