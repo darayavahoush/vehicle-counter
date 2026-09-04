@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.websockets import WebSocketState
 
 from app.capture import LatestFrameReader
-from app.detector import BackgroundSubtractionDetector, YoloOnnxDetector
+from app.detector import BackgroundSubtractionDetector, YoloOnnxDetector, TiledYoloDetector
 from app.tracker import LineCrossingCounter
 from app import db
 
@@ -46,6 +46,21 @@ YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolov8n.onnx")
 YOLO_INPUT_SIZE = int(os.getenv("YOLO_INPUT_SIZE", "320"))
 YOLO_CONF_THRESHOLD = float(os.getenv("YOLO_CONF_THRESHOLD", "0.4"))
 YOLO_NMS_THRESHOLD = float(os.getenv("YOLO_NMS_THRESHOLD", "0.45"))
+
+# COUNT_MODE:
+#   "line_crossing"    (default) — original behavior: vehicles crossing a
+#                        tripwire line, for a fixed camera watching traffic flow.
+#   "static_occupancy" — for a hovering/aerial view of a mostly-static scene
+#                        (e.g. a parking lot): no line, no in/out — just "how
+#                        many vehicles are visible right now", detected with
+#                        tiled inference so small/distant vehicles aren't lost
+#                        to a single full-frame resize. Re-run on a timer
+#                        (STATIC_DETECT_INTERVAL_SEC) rather than every frame,
+#                        since tiling is much more expensive per detection pass.
+COUNT_MODE = os.getenv("COUNT_MODE", "line_crossing")
+STATIC_DETECT_INTERVAL_SEC = float(os.getenv("STATIC_DETECT_INTERVAL_SEC", "5.0"))
+TILE_SIZE = int(os.getenv("TILE_SIZE", "320"))
+TILE_OVERLAP = int(os.getenv("TILE_OVERLAP", "80"))
 
 # Counting line as fractions of the processed frame (0..1), so it scales
 # with PROCESS_WIDTH automatically. Default is a VERTICAL line at
@@ -73,6 +88,16 @@ _capture_source = int(RTSP_URL) if RTSP_URL.strip().isdigit() else RTSP_URL
 def _build_detector():
     if DETECTOR_BACKEND == "yolo":
         if os.path.isfile(YOLO_MODEL_PATH):
+            if COUNT_MODE == "static_occupancy":
+                print(f"[detector] loading TILED YOLOv8n ONNX from {YOLO_MODEL_PATH} "
+                      f"(tile={TILE_SIZE}, overlap={TILE_OVERLAP})")
+                return TiledYoloDetector(
+                    YOLO_MODEL_PATH,
+                    tile=TILE_SIZE,
+                    overlap=TILE_OVERLAP,
+                    conf_threshold=YOLO_CONF_THRESHOLD,
+                    nms_threshold=YOLO_NMS_THRESHOLD,
+                )
             print(f"[detector] loading YOLOv8n ONNX from {YOLO_MODEL_PATH}")
             return YoloOnnxDetector(
                 YOLO_MODEL_PATH,
@@ -110,10 +135,14 @@ class Processor:
     def __init__(self):
         self.reader = LatestFrameReader(_capture_source).start()
         self.detector = _build_detector()
-        self.counter = None  # built once we know frame size
+        self.counter = None  # built once we know frame size (line_crossing mode only)
         self._frame_idx = 0
         self._last_detections = []
         self._running = False
+
+        self.static_mode = COUNT_MODE == "static_occupancy"
+        self._last_static_run_ts = 0.0
+        self._static_count_by_label = {}
 
     def _build_line(self, w, h):
         line = ((LINE_X1 * w, LINE_Y1 * h), (LINE_X2 * w, LINE_Y2 * h))
@@ -137,6 +166,16 @@ class Processor:
         cv2.putText(frame, label, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         return frame
 
+    def _draw_static_overlay(self, frame, detections, total):
+        h, w = frame.shape[:2]
+        for (x, y, bw, bh, label, conf) in detections:
+            cv2.rectangle(frame, (int(x), int(y)), (int(x + bw), int(y + bh)), (60, 220, 60), 1)
+
+        label_text = f"VEHICLES DETECTED: {total}"
+        cv2.rectangle(frame, (0, 0), (w, 30), (0, 0, 0), -1)
+        cv2.putText(frame, label_text, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        return frame
+
     def run(self):
         self._running = True
         frame_interval = 1.0 / OUTPUT_FPS
@@ -150,10 +189,43 @@ class Processor:
                 time.sleep(0.05)
                 continue
 
-            # Downscale for cheap processing.
+            # Downscale for cheap processing/bandwidth. In static mode this
+            # still runs, but set PROCESS_WIDTH much higher (e.g. 1280-1920)
+            # for aerial footage — tiled detection needs vehicles to still
+            # be a decent number of pixels across, unlike line-crossing mode
+            # which can get away with a small PROCESS_WIDTH.
             h, w = frame.shape[:2]
             scale = PROCESS_WIDTH / float(w)
             frame = cv2.resize(frame, (PROCESS_WIDTH, int(h * scale)))
+
+            now = time.time()
+
+            if self.static_mode:
+                # No line, no tracker: just re-run tiled detection on a timer
+                # (it's much more expensive per call than the plain detector)
+                # and report a live snapshot count, not a cumulative one.
+                if now - self._last_static_run_ts >= STATIC_DETECT_INTERVAL_SEC:
+                    self._last_detections = self.detector.detect(frame)
+                    self._static_count_by_label = {}
+                    for (*_, label, _conf) in self._last_detections:
+                        self._static_count_by_label.setdefault(label, {"in": 0, "out": 0})
+                        self._static_count_by_label[label]["in"] += 1
+                    self._last_static_run_ts = now
+
+                total = len(self._last_detections)
+                frame = self._draw_static_overlay(frame, self._last_detections, total)
+
+                if now - last_emit >= frame_interval:
+                    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                    if ok:
+                        with state.lock:
+                            state.jpeg_bytes = buf.tobytes()
+                            state.count_in = total
+                            state.count_out = 0
+                            state.count_by_label = dict(self._static_count_by_label)
+                            state.fps = 1.0 / (now - last_emit) if last_emit else 0.0
+                    last_emit = now
+                continue
 
             if self.counter is None:
                 self._build_line(*frame.shape[1::-1])
@@ -165,7 +237,6 @@ class Processor:
             tracks, events = self.counter.update(self._last_detections)
             frame = self._draw_overlay(frame, tracks)
 
-            now = time.time()
             if now - last_emit >= frame_interval:
                 ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 if ok:

@@ -87,6 +87,63 @@ class YoloOnnxDetector:
         )
 
 
+class TiledYoloDetector:
+    """
+    Same detect(frame) -> boxes interface as YoloOnnxDetector, but slices
+    the frame into overlapping tiles (sized to match the ONNX model's
+    fixed input) before running detection, instead of squashing the whole
+    frame down to input_size in one shot.
+
+    Use this instead of YoloOnnxDetector when the camera is far overhead
+    (drone/aerial) and/or the scene is dense with many small vehicles —
+    a full-frame resize to 320x320 makes each vehicle a handful of pixels
+    and the plain detector misses almost everything. Costs roughly
+    (frame_area / tile_area) times as many forward passes per detection,
+    so throttle how often you call it (see STATIC_DETECT_INTERVAL_SEC in
+    main.py) rather than running it every frame.
+    """
+
+    def __init__(self, model_path, tile=320, overlap=80, conf_threshold=0.25, nms_threshold=0.4):
+        self._inner = YoloOnnxDetector(
+            model_path, input_size=tile, conf_threshold=conf_threshold, nms_threshold=nms_threshold
+        )
+        self.tile = tile
+        self.overlap = overlap
+        self.conf_threshold = conf_threshold
+        self.nms_threshold = nms_threshold
+
+    def detect(self, frame):
+        h, w = frame.shape[:2]
+        tile, stride = self.tile, self.tile - self.overlap
+
+        boxes, confidences, labels = [], [], []
+        ys = list(range(0, max(h - tile, 0) + 1, stride)) or [0]
+        if ys[-1] + tile < h:
+            ys.append(max(h - tile, 0))
+        xs = list(range(0, max(w - tile, 0) + 1, stride)) or [0]
+        if xs[-1] + tile < w:
+            xs.append(max(w - tile, 0))
+
+        for ty in ys:
+            for tx in xs:
+                crop = frame[ty:ty + tile, tx:tx + tile]
+                ch, cw = crop.shape[:2]
+                if ch < tile or cw < tile:
+                    padded = np.zeros((tile, tile, 3), dtype=frame.dtype)
+                    padded[:ch, :cw] = crop
+                    crop = padded
+                for (bx, by, bw, bh, label, conf) in self._inner.detect(crop):
+                    boxes.append([bx + tx, by + ty, bw, bh])
+                    confidences.append(conf)
+                    labels.append(label)
+
+        if not boxes:
+            return []
+        keep = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_threshold, self.nms_threshold)
+        keep = np.array(keep).flatten() if len(keep) else []
+        return [(boxes[i][0], boxes[i][1], boxes[i][2], boxes[i][3], labels[i], confidences[i]) for i in keep]
+
+
 class BackgroundSubtractionDetector:
     def __init__(
         self,

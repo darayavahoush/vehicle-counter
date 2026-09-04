@@ -15,16 +15,38 @@ import time
 import cv2
 
 
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".m4v")
+
+
 class LatestFrameReader:
     def __init__(self, source, reconnect_delay=2.0):
         """
-        source: RTSP URL (str), video file path (str), or webcam index (int)
-        reconnect_delay: seconds to wait before retrying a dropped stream
+        source: RTSP URL (str), video file path (str), directory of video
+                 files (str), or webcam index (int).
+
+        Passing a directory plays every video file inside it back to back,
+        looping the whole set — for a batch of drone clips instead of one
+        fixed camera file.
         """
-        self.source = source
         self.reconnect_delay = reconnect_delay
+        self._playlist = None
+        self._playlist_idx = 0
+
+        if isinstance(source, str) and os.path.isdir(source):
+            self._playlist = sorted(
+                os.path.join(source, f) for f in os.listdir(source)
+                if f.lower().endswith(VIDEO_EXTENSIONS)
+            )
+            if not self._playlist:
+                raise RuntimeError(f"No video files found in directory {source!r}")
+            source = self._playlist[0]
+            print(f"[capture] playing {len(self._playlist)} clip(s) from {source!r}'s directory: "
+                  + ", ".join(os.path.basename(p) for p in self._playlist))
+
+        self.source = source
         # A local video file "disconnecting" just means it hit EOF — loop it
-        # instantly instead of treating it like a dropped camera connection.
+        # (or advance to the next clip in the playlist) instantly instead of
+        # treating it like a dropped camera connection.
         self._is_local_file = isinstance(source, str) and os.path.isfile(source)
         self._cap = None
         self._frame = None
@@ -59,6 +81,15 @@ class LatestFrameReader:
 
             ok, frame = self._cap.read()
             if not ok:
+                if self._playlist:
+                    # End of this clip — advance to the next one in the
+                    # playlist (wrapping around), not just restart the same file.
+                    self._playlist_idx = (self._playlist_idx + 1) % len(self._playlist)
+                    self.source = self._playlist[self._playlist_idx]
+                    print(f"[capture] next clip: {os.path.basename(self.source)}")
+                    self._cap.release()
+                    self._cap = self._open()
+                    continue
                 if self._is_local_file:
                     # End of file, not a dropped connection — loop instantly.
                     self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
