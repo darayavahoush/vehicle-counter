@@ -4,15 +4,23 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt && mkdir -p backend/demo_videos && curl -L -o backend/demo_videos/sideview.mp4 https://raw.githubusercontent.com/Lab-Work/ITS2017_Validation/master/sample.mp4"
+    buildCommand: "pip install -r backend/requirements.txt"
     startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: RTSP_URL
-        value: demo_videos/sideview.mp4
+        value: demo_videos/drone   # directory -> cycles through every clip inside
+      - key: COUNT_MODE
+        value: static_occupancy    # was: line_crossing (default) — no tripwire, just live snapshot counts
+      - key: STATIC_DETECT_INTERVAL_SEC
+        value: "5"                 # tiled inference is expensive; re-run every 5s, not every frame
+      - key: TILE_SIZE
+        value: "320"
+      - key: TILE_OVERLAP
+        value: "80"
       - key: PROCESS_WIDTH
-        value: "640"
+        value: "1280"              # was: 640 — aerial vehicles need more pixels than sideview traffic did
       - key: DETECT_EVERY_N_FRAMES
-        value: "2"
+        value: "2"                 # unused in static_occupancy mode, harmless to leave
       - key: OUTPUT_FPS
         value: "15"
       - key: JPEG_QUALITY
@@ -24,17 +32,9 @@ services:
       - key: YOLO_INPUT_SIZE
         value: "320"
       - key: YOLO_CONF_THRESHOLD
-        value: "0.4"
+        value: "0.25"              # was: 0.4 — lower to recover more small/distant vehicles
       - key: YOLO_NMS_THRESHOLD
         value: "0.45"
-      - key: LINE_X1
-        value: "0.5"
-      - key: LINE_Y1
-        value: "0.55"
-      - key: LINE_X2
-        value: "0.5"
-      - key: LINE_Y2
-        value: "0.9"
       - key: EVENT_LOG_SIZE
         value: "200"
       - key: CORS_ORIGINS
