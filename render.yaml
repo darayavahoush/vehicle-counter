@@ -4,7 +4,7 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r backend/requirements.txt"
+    buildCommand: "pip install -r backend/requirements.txt && pip install -q huggingface_hub && python -c \"from huggingface_hub import hf_hub_download; clips=['DJI_0025.MP4','DJI_0011.MP4','DJI_0030.MP4']; [hf_hub_download(repo_id='anabaena/drone-vehicle-clips', repo_type='dataset', filename=f, local_dir='backend/demo_videos/drone') for f in clips]\""
     startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: RTSP_URL
