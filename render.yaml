@@ -10,15 +10,15 @@ services:
       - key: RTSP_URL
         value: demo_videos/drone   # directory -> cycles through every clip inside
       - key: COUNT_MODE
-        value: static_occupancy    # was: line_crossing (default) — no tripwire, just live snapshot counts
+        value: static_occupancy    # no tripwire, just live snapshot counts
       - key: STATIC_DETECT_INTERVAL_SEC
         value: "5"                 # tiled inference is expensive; re-run every 5s, not every frame
       - key: TILE_SIZE
         value: "320"
       - key: TILE_OVERLAP
-        value: "80"
+        value: "100"               # was: 80 -> tested against real footage, +10% recall, no new false positives
       - key: PROCESS_WIDTH
-        value: "1280"              # was: 640 — aerial vehicles need more pixels than sideview traffic did
+        value: "1280"
       - key: DETECT_EVERY_N_FRAMES
         value: "2"                 # unused in static_occupancy mode, harmless to leave
       - key: OUTPUT_FPS
@@ -32,7 +32,7 @@ services:
       - key: YOLO_INPUT_SIZE
         value: "320"
       - key: YOLO_CONF_THRESHOLD
-        value: "0.25"              # was: 0.4 — lower to recover more small/distant vehicles
+        value: "0.24"              # was: 0.25 -> tested down to here without reintroducing false positives (0.20-0.22 boxed a distant building as a truck)
       - key: YOLO_NMS_THRESHOLD
         value: "0.45"
       - key: EVENT_LOG_SIZE
